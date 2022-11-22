@@ -1,51 +1,26 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import { Terminal } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
 
 import "./App.css";
-import { attachListeners } from "./listeners";
 
-type TerminalState = {
-    terminal: Terminal;
-    addons: {
-        fit: FitAddon;
-    };
-};
+import { Storyteller } from "./Storyteller";
 
 function App() {
-    const [state] = useState<TerminalState>({
-        terminal: new Terminal(),
-        addons: {
-            fit: new FitAddon(),
-        },
+    const terminal = new Terminal({
+        convertEol: true,
+        allowProposedApi: true,
     });
 
     const terminalRef = useRef(null);
 
     useEffect(() => {
-        const handleWindowResize = () => {
-            if (state.terminal) {
-                state.addons.fit.fit();
-            }
-        };
+        new Storyteller({
+            t: terminal,
+            ref: terminalRef,
+        });
+    }, []);
 
-        window.addEventListener("resize", handleWindowResize);
-
-        return () => {
-            window.removeEventListener("resize", handleWindowResize);
-        };
-    }, [state.terminal, state.addons.fit]);
-
-    useEffect(() => {
-        if (!state.terminal.element && terminalRef.current) {
-            state.terminal.open(terminalRef.current);
-            state.terminal.loadAddon(state.addons.fit);
-            state.addons.fit.fit();
-            attachListeners(state.terminal);
-        }
-    }, [state.terminal, state.addons.fit]);
-
-    return <div className='terminal-parent' ref={terminalRef}></div>;
+    return <div ref={terminalRef}></div>;
 }
 
 export default App;
