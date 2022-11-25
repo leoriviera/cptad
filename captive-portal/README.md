@@ -1,4 +1,10 @@
-# Getting Started with Create React App
+# The Captive Portal
+
+This is the React project for the captive portal, the star of the show!
+
+Built with [xtermjs](https://xtermjs.org), this story takes you through the world of Dr. Funktastic.
+
+Getting Started with Create React App
 
 This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
