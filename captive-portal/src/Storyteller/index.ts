@@ -3,6 +3,9 @@ import { MutableRefObject } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
+import { Item } from "./types";
+
+// TODO - fix backspace on left scroll
 
 export class Storyteller {
     static prompt = `${chalk.red("captive")}@${chalk.yellowBright(
@@ -16,41 +19,109 @@ export class Storyteller {
     };
 
     history: string[] = [];
-    command = "";
+    currentHistory: string[] = ["", ...this.history];
+
+    input = {
+        cursorPosition: 0,
+        historyIndex: 0,
+    };
 
     listeners: {
-        match: (code: number) => boolean;
+        match: (e: KeyboardEvent) => boolean;
         handler: (options: { e: KeyboardEvent }) => string | void;
     }[] = [
         {
-            match: (code) => code === 9,
+            // Match [Tab] character
+            match: ({ key }) => key === "Tab",
             handler: () => {
+                const [commandName, ...args] = this.command.split(" ");
+
+                if (args.length === 0) {
+                    const commands = Object.keys(this.commands);
+
+                    const matches = commands.filter((command) =>
+                        command.startsWith(commandName)
+                    );
+
+                    if (matches.length === 1) {
+                        this.command = matches[0];
+                        return `\r\x1b[K${Storyteller.prompt}${this.command}`;
+                    }
+                }
+
                 // TODO - tab completion
                 return undefined;
             },
         },
         {
-            match: (code) => code === 13,
+            // Match [Enter] character
+            match: ({ key }) => key === "Enter",
             handler: (_) => {
                 if (this.command !== "") {
                     this.execute(this.command);
-                    this.command = "";
+                    this.currentHistory = ["", ...this.history];
+                    this.setHistoryIndex();
+
+                    console.log(this.currentHistory);
                 }
 
                 return `\n${Storyteller.prompt}`;
             },
         },
         {
+            // Match up arrow key
+            match: ({ key }) => key === "ArrowUp" || key === "Up",
+            handler: (_) => {
+                if (this.history.length === 0) {
+                    return undefined;
+                }
+
+                const nextIndex = this.input.historyIndex + 1;
+
+                if (nextIndex >= this.history.length + 1) {
+                    return undefined;
+                }
+
+                this.setHistoryIndex(nextIndex);
+
+                return `\r\x1b[K${Storyteller.prompt}${this.command}`;
+            },
+        },
+        // {
+        //     // Match left arrow key
+        //     match: ({ key }) => key === "ArrowLeft" || key === "Left",
+        //     handler: (_) => {},
+        // },
+        {
+            // Match down arrow key
+            match: ({ key }) => key === "ArrowDown" || key === "Down",
+            handler: (_) => {
+                if (this.history.length === 0) {
+                    return undefined;
+                }
+
+                const nextIndex = this.input.historyIndex - 1;
+
+                if (nextIndex < 0) {
+                    this.setHistoryIndex();
+                } else {
+                    this.setHistoryIndex(nextIndex);
+                }
+
+                return `\r\x1b[K${Storyteller.prompt}${this.command}`;
+            },
+        },
+        {
             // Match visible characters
-            match: (code) => code >= 32 && code <= 126,
+            match: ({ key }) => key.length === 1,
             handler: ({ e }) => {
-                console.log(this.command);
-                this.command += e.key;
+                this.command = this.command + e.key;
                 return e.key;
             },
         },
         {
-            match: (code) => code === 127,
+            // Match backspace
+            match: ({ key }) => key === "Backspace",
             handler: (_) => {
                 if (this.command.length === 0) {
                     return undefined;
@@ -62,19 +133,107 @@ export class Storyteller {
         },
     ];
 
-    handlers: Record<string, (args: string[]) => void> = {
-        clear: () => {
+    commands: Record<
+        string,
+        {
+            handler: (args: string[]) => void;
+            helpText?: string;
+        }
+    > = {
+        exit: {
+            handler: () => {
+                this.terminal.write("Nice try! There's no escape!");
+            },
+        },
+        clear: {
+            handler: () => {},
+        },
+        whoami: {
+            handler: () => {
+                this.terminal.write(`\nyou are my ${chalk.red("captive")}`);
+            },
+        },
+        help: {
+            handler: (args) => {
+                const [commandName] = args;
 
+                const helpText =
+                    this.commands[commandName ?? "help"]?.helpText ??
+                    `No help text for "${
+                        commandName ?? "undefined command"
+                    }". Guess this isn't so helpful.`;
+
+                this.terminal.write(helpText);
+            },
+            helpText:
+                "Use [help] with another command to figure out what it does. For example, [help about].",
         },
-        whoami: () => {
-            this.terminal.write(`\nyou are my ${chalk.red("captive")}`);
+        inventory: {
+            handler: (args) => {
+                const items =
+                    this.inventory.length === 0
+                        ? `You dig around in your pockets, and find absolutely nothing. "Maybe I'll find something if I look around a bit more," you think to yourself.`
+                        : `You turn out your pockets and find\n${this.inventory
+                              .map((i) => i.name)
+                              .join("\n")}`;
+
+                this.terminal.write(items);
+            },
         },
-        help: () => {
-            this.terminal.write(
-                "You've stupidly connected to my rogue wireless network, and I've taken your device [captive]."
-            );
+        get: {
+            handler: (args) => {
+                const [itemName] = args;
+                this.addItem(itemName);
+            },
+        },
+        about: {
+            handler: (args) => {
+                const [itemName] = args;
+                const item = this.inventory.find(
+                    (item) => item.name === itemName.toLowerCase()
+                );
+
+                if (!item) {
+                    this.terminal.write(
+                        "You don't have that item! Try looking around a bit more."
+                    );
+                    return;
+                }
+
+                this.terminal.write(item.description);
+            },
+        },
+        history: {
+            helpText:
+                "Prints the last 10 commands by default. Use [history <n>] to print the last <n> commands.",
+            handler: (args) => {
+                const [nString] = args;
+                const n = parseInt(nString) || 10;
+
+                const history = this.history
+                    .slice(1, n + 1)
+                    .reverse()
+                    .map((c) => `[${c}]`)
+                    .join("\n");
+
+                this.terminal.write(history);
+            },
         },
     };
+
+    worldItems: Item[] = [
+        {
+            name: "soap",
+            description:
+                "You squint at the wrapper's tiny text. \"It's a bar of soap. What more do you want?\". Bit passive aggressive, especially for some soap found in a dingy dungeon.",
+        },
+    ];
+
+    setHistoryIndex(index = 0) {
+        this.input.historyIndex = index;
+    }
+
+    inventory: Item[] = [];
 
     autocompleters: Record<string, (args: string[]) => string | void> = {};
 
@@ -117,22 +276,83 @@ export class Storyteller {
                 // "You look scared, you poor little thing. You should be.",
                 // "There's no escape. You're mine now.",
                 // "However, I'm feeling generous, so I'll let you run a few commands.",
-                "You can't [help] yourself, can you?",
+                // "You can't [help] yourself, can you?",
+                "You [look] scared. You should be.",
+                "You've stupidly connected to my rogue wireless network, and I've taken your device captive.",
+                "Good luck escaping! MwahahHAhHAhahAhAh *cough*",
             ];
 
-            this.terminal.write(lines.join("\n"));
+            this.wrapPrint(lines.join("\n"));
+
             this.prompt();
         }
     }
 
+    wrapPrint(data: string) {
+        const { cols } = this.terminal;
+
+        const lines = data.split("\n");
+
+        const wrappedLines = lines
+            .map((line) => {
+                const segments = line
+                    .split(" ")
+                    .reduce<string[]>((acc, word) => {
+                        if (acc.length === 0) {
+                            return [word];
+                        }
+
+                        const s = [...acc];
+
+                        const currentSegment = s.pop() as string;
+
+                        if (
+                            !currentSegment.startsWith("[") ||
+                            (currentSegment.startsWith("[") &&
+                                currentSegment.endsWith("]"))
+                        ) {
+                            return [...s, currentSegment, word];
+                        }
+
+                        if (currentSegment.startsWith("[")) {
+                            return [...s, `${currentSegment} ${word}`];
+                        }
+
+                        return [...acc, word];
+                    }, []);
+
+                return segments
+                    .reduce(
+                        (acc, word) => {
+                            const lines = [...acc];
+
+                            const currentLine = lines.pop() as string;
+
+                            if (currentLine.length + word.length < cols) {
+                                return [
+                                    ...lines,
+                                    `${currentLine} ${word}`.trim(),
+                                ];
+                            } else {
+                                return [...lines, currentLine, word];
+                            }
+                        },
+                        [""]
+                    )
+                    .join("\n");
+            })
+            .join("\n");
+
+        this.terminal.write(wrappedLines);
+    }
+
     attachListeners() {
         this.terminal.onKey(({ key, domEvent }) => {
-            const code = key.charCodeAt(0);
-
+            console.log(this.currentHistory);
             const output = (
-                this.listeners.find((listener) => listener.match(code)) ?? {
+                this.listeners.find((listener) => listener.match(domEvent)) ?? {
                     handler: () => {
-                        console.debug("No listener for key at code", code);
+                        console.debug("No listener for key at code", key);
                         return key;
                     },
                 }
@@ -144,18 +364,34 @@ export class Storyteller {
         });
     }
 
+    addItem(name: string) {
+        const item = this.worldItems.find(
+            (item) => item.name === name.toLowerCase()
+        );
+
+        if (!item) {
+            console.error("No item with name", name);
+            return;
+        }
+
+        this.terminal.write(`You now have ${chalk.green(item.name)}!`);
+        this.inventory.push(item);
+    }
+
     execute(command: string) {
-        this.history.push(command);
+        this.history = [command, ...this.history];
+
         const [commandName, ...args] = command.split(" ");
 
         this.terminal.write("\n");
 
-        (
-            this.handlers[commandName] ??
-            ((_) => {
+        const { handler } = this.commands[commandName] || {
+            handler: (_) => {
                 this.terminal.write(`psh: command not found: ${commandName}`);
-            })
-        )(args);
+            },
+        };
+
+        handler(args);
     }
 
     autocomplete(commandName: string, args: string[]) {
@@ -169,7 +405,7 @@ export class Storyteller {
                     return undefined;
                 }
 
-                const possibleCommands = Object.keys(this.handlers).filter(
+                const possibleCommands = Object.keys(this.commands).filter(
                     (handler) => handler.startsWith(commandName)
                 );
 
@@ -181,5 +417,14 @@ export class Storyteller {
 
     prompt() {
         this.terminal.write(`\n${Storyteller.prompt}`);
+    }
+
+    get command() {
+        return this.currentHistory[this.input.historyIndex];
+    }
+
+    set command(command: string) {
+        this.currentHistory[this.input.historyIndex] = command;
+        this.input.cursorPosition = command.length;
     }
 }
