@@ -3,14 +3,17 @@ import { MutableRefObject } from "react";
 import { Terminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
-import { Item } from "./types";
-
-// TODO - fix backspace on left scroll
+import { Command, Item, Room, StoryPoint } from "./types";
 
 export class Storyteller {
     static prompt = `${chalk.red("captive")}@${chalk.yellowBright(
         "portal"
     )}:~$ `;
+    static strippedPrompt = Storyteller.prompt.replace(
+        // eslint-disable-next-line no-control-regex
+        /\x1B[[(?);]{0,2}(;?\d)*./g,
+        ""
+    );
 
     terminal: Terminal;
     options: {
@@ -37,16 +40,31 @@ export class Storyteller {
                 const [commandName, ...args] = this.command.split(" ");
 
                 if (args.length === 0) {
-                    const commands = Object.keys(this.commands);
+                    const commands = Object.keys(this.availableCommands);
 
                     const matches = commands.filter((command) =>
                         command.startsWith(commandName)
                     );
 
+                    if (matches.length === 0) {
+                        return undefined;
+                    }
+
                     if (matches.length === 1) {
                         this.command = matches[0];
                         return `\r\x1b[K${Storyteller.prompt}${this.command}`;
                     }
+
+                    return [
+                        "\r\n\x1b[K",
+                        matches.map((m) => `[${m}]`).join("\n"),
+                        `\r\x1b[${matches.length}A`,
+                        `\x1b[${
+                            Storyteller.strippedPrompt.length +
+                            this.input.cursorPosition +
+                            1
+                        }G`,
+                    ].join("");
                 }
 
                 // TODO - tab completion
@@ -60,12 +78,10 @@ export class Storyteller {
                 if (this.command !== "") {
                     this.execute(this.command);
                     this.currentHistory = ["", ...this.history];
-                    this.setHistoryIndex();
-
-                    console.log(this.currentHistory);
+                    this.historyIndex = 0;
                 }
 
-                return `\n${Storyteller.prompt}`;
+                return `\x1b[0J\n${Storyteller.prompt}`;
             },
         },
         {
@@ -82,16 +98,37 @@ export class Storyteller {
                     return undefined;
                 }
 
-                this.setHistoryIndex(nextIndex);
+                this.historyIndex = nextIndex;
 
                 return `\r\x1b[K${Storyteller.prompt}${this.command}`;
             },
         },
-        // {
-        //     // Match left arrow key
-        //     match: ({ key }) => key === "ArrowLeft" || key === "Left",
-        //     handler: (_) => {},
-        // },
+        {
+            // Match left arrow key
+            match: ({ key }) => key === "ArrowLeft" || key === "Left",
+            handler: (_) => {
+                if (this.input.cursorPosition === 0) {
+                    return undefined;
+                }
+
+                this.input.cursorPosition -= 1;
+
+                return "\x1b[D";
+            },
+        },
+        {
+            // Match right arrow key
+            match: ({ key }) => key === "ArrowRight" || key === "Right",
+            handler: (_) => {
+                if (this.input.cursorPosition === this.command.length) {
+                    return undefined;
+                }
+
+                this.input.cursorPosition += 1;
+
+                return "\x1b[C";
+            },
+        },
         {
             // Match down arrow key
             match: ({ key }) => key === "ArrowDown" || key === "Down",
@@ -103,9 +140,9 @@ export class Storyteller {
                 const nextIndex = this.input.historyIndex - 1;
 
                 if (nextIndex < 0) {
-                    this.setHistoryIndex();
+                    this.historyIndex = 0;
                 } else {
-                    this.setHistoryIndex(nextIndex);
+                    this.historyIndex = nextIndex;
                 }
 
                 return `\r\x1b[K${Storyteller.prompt}${this.command}`;
@@ -116,30 +153,75 @@ export class Storyteller {
             match: ({ key }) => key.length === 1,
             handler: ({ e }) => {
                 this.command = this.command + e.key;
-                return e.key;
+
+                return [
+                    "\r\x1b[K",
+                    `${Storyteller.prompt}${this.command}`,
+                    `\x1b[${
+                        Storyteller.strippedPrompt.length +
+                        this.input.cursorPosition +
+                        1
+                    }G`,
+                ].join("");
             },
         },
         {
             // Match backspace
             match: ({ key }) => key === "Backspace",
             handler: (_) => {
-                if (this.command.length === 0) {
+                const newPosition = this.input.cursorPosition - 1;
+
+                if (
+                    this.command.length === 0 ||
+                    this.input.cursorPosition === 0
+                ) {
                     return undefined;
                 }
 
-                this.command = this.command.slice(0, -1);
-                return "\b \b";
+                // Remove character at cursor position
+                this.command =
+                    this.command.slice(0, newPosition) +
+                    this.command.slice(newPosition + 1);
+
+                this.input.cursorPosition = newPosition;
+
+                return [
+                    "\r\x1b[K",
+                    `${Storyteller.prompt}${this.command}`,
+                    `\x1b[${
+                        Storyteller.strippedPrompt.length +
+                        this.input.cursorPosition +
+                        1
+                    }G`,
+                ].join("");
             },
         },
     ];
 
-    commands: Record<
-        string,
-        {
-            handler: (args: string[]) => void;
-            helpText?: string;
-        }
-    > = {
+    rooms: Record<string, Room> = {
+        cell: {
+            storyPoints: {
+                start: {
+                    text: ["Finally [awake], I see."],
+                    commands: {
+                        awake: {
+                            handler: () => {
+                                const lines = [
+                                    "You stir slowly.",
+                                    "You look around. You're in a damp, cold cell.",
+                                    "Your head is thumping. The floor is cold.",
+                                ];
+
+                                this.wrapPrint(lines);
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    commands: Record<string, Command> = {
         exit: {
             handler: () => {
                 this.terminal.write("Nice try! There's no escape!");
@@ -158,7 +240,7 @@ export class Storyteller {
                 const [commandName] = args;
 
                 const helpText =
-                    this.commands[commandName ?? "help"]?.helpText ??
+                    this.availableCommands[commandName ?? "help"]?.helpText ??
                     `No help text for "${
                         commandName ?? "undefined command"
                     }". Guess this isn't so helpful.`;
@@ -221,6 +303,9 @@ export class Storyteller {
         },
     };
 
+    room: Room = this.rooms.cell;
+    storyPoint: StoryPoint = this.room.storyPoints.start;
+
     worldItems: Item[] = [
         {
             name: "soap",
@@ -228,10 +313,6 @@ export class Storyteller {
                 "You squint at the wrapper's tiny text. \"It's a bar of soap. What more do you want?\". Bit passive aggressive, especially for some soap found in a dingy dungeon.",
         },
     ];
-
-    setHistoryIndex(index = 0) {
-        this.input.historyIndex = index;
-    }
 
     inventory: Item[] = [];
 
@@ -272,26 +353,14 @@ export class Storyteller {
             this.options.addons[0].fit();
             this.attachListeners();
 
-            const lines = [
-                // "You look scared, you poor little thing. You should be.",
-                // "There's no escape. You're mine now.",
-                // "However, I'm feeling generous, so I'll let you run a few commands.",
-                // "You can't [help] yourself, can you?",
-                "You [look] scared. You should be.",
-                "You've stupidly connected to my rogue wireless network, and I've taken your device captive.",
-                "Good luck escaping! MwahahHAhHAhahAhAh *cough*",
-            ];
-
-            this.wrapPrint(lines.join("\n"));
-
-            this.prompt();
+            this.setStoryPoint(this.storyPoint);
         }
     }
 
-    wrapPrint(data: string) {
+    wrapPrint(data: string | string[]) {
         const { cols } = this.terminal;
 
-        const lines = data.split("\n");
+        const lines = Array.isArray(data) ? data : data.split("\n");
 
         const wrappedLines = lines
             .map((line) => {
@@ -364,6 +433,13 @@ export class Storyteller {
         });
     }
 
+    setStoryPoint(s: StoryPoint) {
+        this.storyPoint = s;
+        this.terminal.clear();
+        this.wrapPrint(s.text);
+        this.prompt();
+    }
+
     addItem(name: string) {
         const item = this.worldItems.find(
             (item) => item.name === name.toLowerCase()
@@ -385,34 +461,13 @@ export class Storyteller {
 
         this.terminal.write("\n");
 
-        const { handler } = this.commands[commandName] || {
+        const { handler } = this.availableCommands[commandName] || {
             handler: (_) => {
                 this.terminal.write(`psh: command not found: ${commandName}`);
             },
         };
 
         handler(args);
-    }
-
-    autocomplete(commandName: string, args: string[]) {
-        const suggestions =
-            this.autocompleters[commandName] ??
-            ((a) => {
-                if (a.length > 1) {
-                    console.debug(
-                        `No listener for input ${commandName} ${a.join(" ")}`
-                    );
-                    return undefined;
-                }
-
-                const possibleCommands = Object.keys(this.commands).filter(
-                    (handler) => handler.startsWith(commandName)
-                );
-
-                return possibleCommands;
-            })(args);
-
-        console.log(suggestions);
     }
 
     prompt() {
@@ -423,8 +478,20 @@ export class Storyteller {
         return this.currentHistory[this.input.historyIndex];
     }
 
+    set historyIndex(index: number) {
+        this.input.historyIndex = index;
+        this.input.cursorPosition = this.command.length;
+    }
+
     set command(command: string) {
         this.currentHistory[this.input.historyIndex] = command;
         this.input.cursorPosition = command.length;
+    }
+
+    get availableCommands() {
+        return {
+            ...this.commands,
+            ...this.storyPoint.commands,
+        };
     }
 }
